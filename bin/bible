@@ -1,0 +1,147 @@
+require 'rubygems'
+require 'commandline'
+begin
+  require 'win32console'
+rescue LoadError
+  # no-op
+end
+
+require 'highline'
+
+$:.unshift(File.dirname(__FILE__) + "/..") unless $:.include?(File.dirname(__FILE__) + "/..")
+require 'lib/bible'
+
+module Bible
+  class App < CommandLine::Application
+  
+    def initialize
+      synopsis "[-h, --help] [-d, --debug] [-t, --trans (NAB|DR|RSV)] [reference]"
+      short_description <<-EOS
+  Prints the text of the bible reference given.
+      EOS
+      long_description <<-EOS
+      Given a wide variety of bible references, this program will print the text of that reference. If none is given, an interactive console will
+      be started instead. Possible references include:
+  
+        Gen 1:1
+        Gen 1:1-10
+        Gen 1:1, 2:1
+        Gen 1:1 - Lev 1:1
+        Gen 1 - Lev 1
+        1 John 1 - 2 John 1
+        Rev 1, 2, 3:10
+  
+      etc.
+      EOS
+  
+      option :names => %w(-t --trans), :arity => [1,1], :arg_description => "translation",
+        :opt_description => "Specify the translation to use. DR for Douey-Rheims, NAB for New American Bible, or RSV for Revised Standard Version.",
+        :opt_found => get_args
+  
+      options :help, :debug
+  
+      expected_args [0, -1]
+    end
+  
+    
+    # Sets paging and wrapping characteristics, if avialable.
+    def set_page_and_wrap
+			width, height = HighLine::SystemExtensions.terminal_size
+			@hl.wrap_at, @hl.page_at = [72, width - 1].min, height - 2
+    end
+  
+    def main
+      lookup = nil
+      
+      @hl = HighLine.new
+      set_page_and_wrap
+
+      lookup = opt["-t"].strip if opt["-t"]
+  
+      if @args.nil? || @args.length == 0
+        while line = @hl.ask("Enter a verse (h for help): ")
+          begin
+            case line.strip
+            when /^:nab$/i
+              lookup = :nab
+              @hl.say "Using New American Bible"
+            when /^:rsv$/i
+              lookup = :rsv
+              @hl.say "Using Revised Standard Bible"
+            when /^:dr$/i
+              lookup = :dr
+              @hl.say "Using Douay-Rheims Bible"
+            when /^h$/i, /^help$/i, /^\?$/
+              @hl.say <<-EOS
+  Enter a verse to get text (Gen 1:1, James 2-5, etc)
+  exit to quit
+
+  :nab to use New American
+  :dr to use Douay-Rheims
+  :rsv to use Revised Standard Version
+
+  EOS
+            when /^q/i, /^exit/i
+              break
+            when /^$/
+            else
+              print_reference(Bible[line, lookup])
+            end
+          rescue Exception
+            puts "An error occurred: #{$!.message}"
+          end
+        end
+      else
+        print_reference(Bible[@args.join(" "),lookup])
+      end
+    rescue
+      puts "An exception occurred: #{$!.message}\n\n#{$!.backtrace.join("\n")}"
+      raise $!
+    end
+    
+    def print_reference(ref)
+      # To access the @ansi color functions of Win32 Console, we need to
+      # include the instance methods in a class. Don't want to pollute Object,
+      # so create an anonymous class which we can stick these methods in.
+      @ansi ||=
+        Class.new do
+          if defined? Win32
+            include Win32::Console::ANSI
+            include Term::ANSIColor
+          else
+            # No-op for all methods if no Win32.
+            def method_missing(sym, *args, &blk)
+              ""
+            end
+          end
+        end.new
+      
+      b, c, v = nil, nil, nil
+      result = ref.collect do |text, book_symbol, chapter_number, verse_number|
+        s = ""
+  
+        # Insert headings and newlines if discontinuity detected
+        if book_symbol != b 
+          s << "\n\n" 
+          s << @ansi.bold << @ansi.white << book_symbol.to_s << ", Chapter " << chapter_number.to_s << @ansi.reset << "\n\n"
+        elsif chapter_number != c
+          s << "\n\n" 
+          s << @ansi.bold << "Chapter " << chapter_number.to_s << @ansi.reset << "\n\n"
+        elsif ! v.nil? && v != verse_number - 1
+          s << "\n\n" 
+        end
+        
+        s << @ansi.bold << " " << verse_number.to_s << @ansi.reset << " "
+        
+        b, c, v = book_symbol, chapter_number, verse_number
+        s << text
+        
+      end.join
+          
+      @hl.say result
+      @hl.say "\n\n"
+    end
+  end
+end
+
+Bible::App.run unless $0 == __FILE__
